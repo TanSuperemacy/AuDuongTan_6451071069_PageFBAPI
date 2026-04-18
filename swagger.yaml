@@ -1,0 +1,354 @@
+openapi: 3.0.0
+info:
+  title: Facebook Page API
+  description: Backend API wrapper cho Facebook Page Graph API
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3000
+    description: Local server
+
+tags:
+  - name: Page API
+    description: Endpoints cho Page Graph API (/{page-id}/...)
+
+paths:
+  /api/page/{pageId}:
+    get:
+      tags:
+        - Page API
+      summary: Lấy thông tin Page
+      description: Trả về id, tên, fan count, category, website của Page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          description: ID của Facebook Page
+          schema:
+            type: string
+            example: "123456789"
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      fan_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/page/{pageId}/posts:
+    get:
+      tags:
+        - Page API
+      summary: Lấy danh sách bài đăng
+      description: Lấy các bài đăng gần nhất của Page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "123456789"
+        - name: limit
+          in: query
+          required: false
+          description: Số bài muốn lấy (mặc định 10)
+          schema:
+            type: integer
+            default: 10
+            example: 5
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            message:
+                              type: string
+                            created_time:
+                              type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags:
+        - Page API
+      summary: Đăng bài mới
+      description: Tạo một bài đăng mới lên Page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "123456789"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+              properties:
+                message:
+                  type: string
+                  description: Nội dung bài đăng
+                  example: "Xin chào từ API!"
+                link:
+                  type: string
+                  description: Đường dẫn đính kèm (tuỳ chọn)
+                  example: "https://example.com"
+      responses:
+        "201":
+          description: Đăng bài thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        example: "123456789_987654321"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/page/post/{postId}:
+    delete:
+      tags:
+        - Page API
+      summary: Xoá bài đăng
+      description: Xoá một bài đăng theo postId
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          description: ID bài đăng (dạng pageId_postId)
+          schema:
+            type: string
+            example: "123456789_987654321"
+      responses:
+        "200":
+          description: Xoá thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      success:
+                        type: boolean
+                        example: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/page/{pageId}/insights:
+    get:
+      tags:
+        - Page API
+      summary: Lấy thống kê (Insights) của Page
+      description: Trả về số liệu lượt tiếp cận, người tương tác, fan...
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "123456789"
+        - name: period
+          in: query
+          required: false
+          description: Khoảng thời gian thống kê
+          schema:
+            type: string
+            enum: [day, week, month, lifetime]
+            default: day
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/page/post/{postId}/comments:
+    get:
+      tags:
+        - Page API
+      summary: Lấy bình luận của bài đăng
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "123456789_987654321"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/page/post/{postId}/likes:
+    get:
+      tags:
+        - Page API
+      summary: Lấy lượt thích của bài đăng
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "123456789_987654321"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  responses:
+    BadRequest:
+      description: Dữ liệu đầu vào không hợp lệ
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                example: false
+              error:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Trường 'message' là bắt buộc."
+    Unauthorized:
+      description: Token không hợp lệ hoặc hết hạn
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                example: false
+              error:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalid OAuth access token."
+    NotFound:
+      description: Không tìm thấy tài nguyên
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                example: false
+              error:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Unsupported get request."
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: "Dán Page Access Token vào đây. Lấy từ: graph.facebook.com/v19.0/me/accounts?access_token=USER_TOKEN"
+
+security:
+  - BearerAuth: []
