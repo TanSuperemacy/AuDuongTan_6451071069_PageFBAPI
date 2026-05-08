@@ -1,0 +1,77 @@
+# docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Khởi động Kafka + Zookeeper cục bộ để phát triển và kiểm thử.
+#
+# Cách dùng:
+#   docker-compose up -d          # Khởi động ở chế độ nền
+#   docker-compose down           # Dừng và xóa container
+#   docker-compose logs -f kafka  # Xem log của Kafka
+#
+# Sau khi chạy, Kafka sẽ lắng nghe tại: localhost:9092
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.8"
+
+services:
+  # ── Zookeeper ──────────────────────────────────────────────────────────────
+  # Kafka (phiên bản cũ) cần Zookeeper để quản lý metadata và bầu leader.
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181   # Port mà Kafka kết nối đến Zookeeper
+      ZOOKEEPER_TICK_TIME: 2000     # Đơn vị thời gian cơ sở (ms)
+    ports:
+      - "2181:2181"
+    networks:
+      - kafka-net
+
+  # ── Kafka Broker ───────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      # 9092: Port bên ngoài container (ứng dụng Node.js kết nối qua đây)
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+
+      # LISTENERS: Cổng lắng nghe bên trong Docker network và bên ngoài
+      KAFKA_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://0.0.0.0:9092
+
+      # ADVERTISED_LISTENERS: Địa chỉ Kafka quảng bá cho client
+      #   - INTERNAL: dùng giữa các container trong cùng Docker network
+      #   - EXTERNAL: dùng cho ứng dụng bên ngoài Docker (Node.js trên máy bạn)
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1  # 1 broker nên replication = 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"    # Tự tạo topic nếu chưa tồn tại
+    networks:
+      - kafka-net
+
+  # ── Kafka UI (tùy chọn, rất hữu ích để kiểm tra topic và message) ──────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - kafka-net
+
+networks:
+  kafka-net:
+    driver: bridge

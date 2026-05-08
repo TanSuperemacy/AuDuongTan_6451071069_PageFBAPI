@@ -1,7 +1,7 @@
 {
   "name": "facebook-page-api",
-  "version": "1.0.0",
-  "description": "Backend API wrapper cho Facebook Page Graph API",
+  "version": "2.0.0",
+  "description": "Backend API wrapper cho Facebook Page Graph API + Webhook & Kafka real-time processing",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -11,6 +11,7 @@
     "axios": "^1.6.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "kafkajs": "^2.2.4",
     "swagger-ui-express": "^5.0.0",
     "yamljs": "^0.3.0"
   },

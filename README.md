@@ -1,218 +1,419 @@
-# Facebook Page API – Backend
+# Facebook Page API · Webhook & Kafka Real-time Processing
 
-Backend Express.js đóng vai trò làm lớp trung gian giữa client và Facebook Graph API.
-Dự án này thực hiện Phần 2 của bài tập môn Lập trình API.
-
----
-
-## Yêu cầu môi trường
-
-- Node.js >= 18
-- npm >= 9
-- Tài khoản Meta Developer đã tạo App và có **Page Access Token**
+> **Bài tập môn Lập trình API – Bài 2** · Sinh viên: Âu Dương Tân · MSSV: 6451071069
+>
+> Hệ thống hướng sự kiện có khả năng xử lý theo thời gian thực:
+> nhận Webhook event từ Facebook → xác thực chữ ký → chuẩn hóa dữ liệu → publish vào Kafka topic `raw_events`.
 
 ---
 
-## Cài đặt
+## Mục lục
 
-```bash
-# 1. Clone hoặc giải nén thư mục dự án
-cd facebook-page-api
+1. [Kiến trúc hệ thống](#1-kiến-trúc-hệ-thống)
+2. [Cấu trúc thư mục](#2-cấu-trúc-thư-mục)
+3. [Yêu cầu môi trường](#3-yêu-cầu-môi-trường)
+4. [Cài đặt & Cấu hình](#4-cài-đặt--cấu-hình)
+5. [Khởi động Kafka bằng Docker](#5-khởi-động-kafka-bằng-docker)
+6. [Chạy server](#6-chạy-server)
+7. [Luồng hoạt động Webhook](#7-luồng-hoạt-động-webhook)
+8. [Đăng ký nhận sự kiện từ Facebook](#8-đăng-ký-nhận-sự-kiện-từ-facebook)
+9. [Danh sách API](#9-danh-sách-api)
+10. [Schema chuẩn hóa sự kiện](#10-schema-chuẩn-hóa-sự-kiện)
+11. [Kiểm tra luồng end-to-end](#11-kiểm-tra-luồng-end-to-end)
+12. [Lấy Page Access Token](#12-lấy-page-access-token)
 
-# 2. Cài dependencies
-npm install
+---
 
-# 3. Tạo file .env từ file mẫu
-cp .env.example .env
+## 1. Kiến trúc hệ thống
+
 ```
-
-Mở file `.env` và điền token của bạn vào:
-
-```
-PAGE_ACCESS_TOKEN=EAAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GRAPH_API_VERSION=v19.0
-PORT=3000
+Facebook Platform
+      │
+      │  HTTP POST (khi có comment / message mới)
+      ▼
+┌─────────────────────────────────────────────────┐
+│              webhook-service (port 3001)         │
+│                                                  │
+│  GET  /webhook  ── Xác thực lần đầu (Challenge) │
+│  POST /webhook                                   │
+│    ├── 1. Trả 200 OK ngay lập tức               │
+│    ├── 2. Xác thực X-Hub-Signature-256           │
+│    ├── 3. Parse JSON payload                     │
+│    ├── 4. Normalize → Unified Event Schema       │
+│    └── 5. Publish → Kafka topic "raw_events"    │
+└───────────────────────┬─────────────────────────┘
+                        │
+                        ▼
+              ┌─────────────────┐
+              │  Apache Kafka   │
+              │  topic:         │
+              │  raw_events     │
+              └─────────────────┘
+                        │
+                        ▼
+              (Consumer Service xử lý tiếp...)
 ```
 
 ---
 
-## Chạy server
-
-```bash
-# Chạy bình thường
-npm start
-
-# Chạy ở chế độ dev (tự reload khi sửa file)
-npm run dev
-```
-
-Server mặc định lắng nghe tại `http://localhost:3000`.
-
----
-
-## Cấu trúc thư mục
+## 2. Cấu trúc thư mục
 
 ```
 facebook-page-api/
 ├── src/
 │   ├── config/
-│   │   └── graph.js          # Cấu hình base URL và token
+│   │   ├── graph.js              # Cấu hình Facebook Graph API (base URL, token)
+│   │   └── kafka.js              # Cấu hình Kafka (brokers, clientId, topic)
 │   ├── middleware/
-│   │   └── errorHandler.js   # Xử lý lỗi tập trung
+│   │   └── errorHandler.js       # Xử lý lỗi tập trung
 │   ├── routes/
-│   │   └── page.js           # Định nghĩa toàn bộ route /api/page
+│   │   ├── page.js               # Routes /api/page/** (Graph API + subscription)
+│   │   └── webhook.js            # Routes /webhook (GET verify + POST receive)
 │   ├── services/
-│   │   └── graphService.js   # Gọi Facebook Graph API
-│   └── index.js              # Entry point, khởi tạo Express
-├── .env.example
+│   │   ├── graphService.js       # Gọi Facebook Graph API
+│   │   ├── kafkaProducer.js      # Kafka Producer (connect / publish / disconnect)
+│   │   └── subscriptionService.js # Đăng ký/hủy webhook subscription với Facebook
+│   ├── utils/
+│   │   └── normalizeEvent.js     # Chuẩn hóa payload → Unified Event Schema
+│   └── index.js                  # Entry point Express
+├── .env                          # Biến môi trường (KHÔNG commit lên git)
+├── docker-compose.yml            # Kafka + Zookeeper + Kafka UI
 ├── package.json
-└── README.md
+└── swagger.yaml
 ```
 
 ---
 
-## Danh sách API
+## 3. Yêu cầu môi trường
 
-### Page
-
-| Method   | Endpoint                          | Mô tả                              |
-|----------|-----------------------------------|------------------------------------|
-| GET      | `/api/page/:pageId`               | Lấy thông tin cơ bản của Page      |
-| GET      | `/api/page/:pageId/posts`         | Lấy danh sách bài đăng             |
-| POST     | `/api/page/:pageId/posts`         | Đăng bài mới lên Page              |
-| DELETE   | `/api/page/post/:postId`          | Xoá bài đăng                       |
-| GET      | `/api/page/post/:postId/comments` | Lấy bình luận của bài đăng         |
-| GET      | `/api/page/post/:postId/likes`    | Lấy lượt thích của bài đăng        |
-| GET      | `/api/page/:pageId/insights`      | Lấy thống kê (insights) của Page   |
+| Phần mềm | Phiên bản tối thiểu |
+|----------|---------------------|
+| Node.js  | 18+                 |
+| npm      | 9+                  |
+| Docker Desktop | Bất kỳ (để chạy Kafka) |
+| Tài khoản Meta Developer | Đã tạo App + Page |
 
 ---
 
-## Chi tiết từng API
+## 4. Cài đặt & Cấu hình
 
-### GET `/api/page/:pageId`
+### Bước 1 — Cài dependencies
 
-Trả về thông tin cơ bản của Page: id, tên, fan count, mô tả, category, website.
-
+```bash
+cd facebook-page-api
+npm install
 ```
-GET http://localhost:3000/api/page/123456789
+
+### Bước 2 — Cấu hình file `.env`
+
+File `.env` đã có sẵn. Bạn chỉ cần điền các giá trị thực của mình:
+
+```env
+PORT=3001
+
+# ── Facebook Graph API ────────────────────────────────────────────────────────
+PAGE_ACCESS_TOKEN=EAAxxxxxxxxxxxxxxxx      # Page Access Token từ Meta Developer
+GRAPH_API_VERSION=v19.0
+
+# ── Facebook Webhook ──────────────────────────────────────────────────────────
+WEBHOOK_VERIFY_TOKEN=my_secure_verify_token_2024   # Token tự đặt (bạn muốn gì cũng được)
+FACEBOOK_APP_SECRET=your_facebook_app_secret_here  # Lấy từ App > Settings > Basic
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+KAFKA_BROKERS=localhost:9092
+KAFKA_CLIENT_ID=facebook-page-api
+KAFKA_TOPIC=raw_events
 ```
+
+> **Lấy App Secret:** Meta for Developers → Chọn App → **Settings → Basic → App Secret → Show**
 
 ---
 
-### GET `/api/page/:pageId/posts`
+## 5. Khởi động Kafka bằng Docker
 
-Trả về danh sách bài đăng gần nhất.
+```bash
+# Khởi động Kafka + Zookeeper + Kafka UI (chạy nền)
+docker-compose up -d
 
-| Query param | Kiểu   | Mặc định | Mô tả              |
-|-------------|--------|----------|--------------------|
-| `limit`     | number | 10       | Số bài muốn lấy    |
+# Kiểm tra trạng thái
+docker-compose ps
 
-```
-GET http://localhost:3000/api/page/123456789/posts?limit=5
-```
-
----
-
-### POST `/api/page/:pageId/posts`
-
-Đăng bài mới lên trang.
-
-**Body (JSON):**
-
-| Trường    | Bắt buộc | Mô tả                        |
-|-----------|----------|------------------------------|
-| `message` | Có       | Nội dung bài viết            |
-| `link`    | Không    | Đường dẫn đính kèm (URL)     |
-
-```json
-{
-  "message": "Xin chào từ API!",
-  "link": "https://example.com"
-}
+# Xem log nếu cần
+docker-compose logs -f kafka
 ```
 
----
+Sau khi chạy xong:
 
-### DELETE `/api/page/post/:postId`
+| Service    | Địa chỉ                          |
+|------------|----------------------------------|
+| Kafka      | `localhost:9092`                 |
+| Zookeeper  | `localhost:2181`                 |
+| Kafka UI   | http://localhost:8080            |
 
-Xoá bài đăng theo ID. `postId` có dạng `{pageId}_{postId}`.
+> **Kafka UI** rất hữu ích để xem các message đã được publish vào topic `raw_events`.
 
-```
-DELETE http://localhost:3000/api/page/post/123456789_987654321
-```
+Dừng Kafka khi không dùng:
 
----
-
-### GET `/api/page/post/:postId/comments`
-
-Lấy các bình luận của một bài đăng.
-
-| Query param | Kiểu   | Mặc định | Mô tả                  |
-|-------------|--------|----------|------------------------|
-| `limit`     | number | 20       | Số bình luận muốn lấy  |
-
-```
-GET http://localhost:3000/api/page/post/123456789_987654321/comments
+```bash
+docker-compose down
 ```
 
 ---
 
-### GET `/api/page/post/:postId/likes`
+## 6. Chạy server
 
-Lấy danh sách người đã like bài đăng.
+```bash
+# Chế độ production
+npm start
 
-| Query param | Kiểu   | Mặc định | Mô tả               |
-|-------------|--------|----------|---------------------|
-| `limit`     | number | 20       | Số lượt like muốn lấy |
+# Chế độ development (tự reload khi sửa file)
+npm run dev
+```
+
+Server lắng nghe tại: **`http://localhost:3001`**
+
+| URL | Mô tả |
+|-----|-------|
+| http://localhost:3001/docs | Swagger UI — tài liệu API |
+| http://localhost:3001/webhook | Webhook endpoint |
+
+Khi khởi động thành công, console hiển thị:
 
 ```
-GET http://localhost:3000/api/page/post/123456789_987654321/likes
+[Kafka] Producer đã kết nối. Topic: "raw_events"
+Server đang chạy tại http://localhost:3001
+Swagger UI:        http://localhost:3001/docs
+Webhook endpoint:  http://localhost:3001/webhook
 ```
 
 ---
 
-### GET `/api/page/:pageId/insights`
+## 7. Luồng hoạt động Webhook
 
-Lấy số liệu thống kê của Page (lượt tiếp cận, người tương tác, lượt xem…).
+### Bước A — Expose server ra internet (dùng ngrok)
 
-| Query param | Kiểu   | Mặc định | Giá trị hợp lệ               |
-|-------------|--------|----------|------------------------------|
-| `period`    | string | `day`    | `day`, `week`, `month`, `lifetime` |
+Facebook cần gọi được vào server của bạn từ internet. Dùng **ngrok** để tạo public URL:
 
+```bash
+# Cài ngrok: https://ngrok.com/download
+ngrok http 3001
 ```
-GET http://localhost:3000/api/page/123456789/insights?period=week
+
+Bạn sẽ nhận được URL dạng:
+```
+Forwarding  https://abc123.ngrok-free.app -> http://localhost:3001
 ```
 
-> **Lưu ý:** API Insights yêu cầu Page Access Token có quyền `read_insights`.
+### Bước B — Cấu hình Webhook trên Meta Developer Dashboard
+
+1. Vào [Meta for Developers](https://developers.facebook.com/) → Chọn App
+2. Menu bên trái → **Webhooks**
+3. Chọn **Page** → **Subscribe to this object**
+4. Điền:
+   - **Callback URL**: `https://abc123.ngrok-free.app/webhook`
+   - **Verify Token**: Giá trị `WEBHOOK_VERIFY_TOKEN` trong `.env` của bạn
+5. Nhấn **Verify and Save** — Facebook sẽ gọi `GET /webhook` để xác thực
+
+### Bước C — Đăng ký nhận sự kiện bình luận
+
+Sau khi verify webhook xong, gọi API để đăng ký page nhận events:
+
+```bash
+curl -X POST http://localhost:3001/api/page/{PAGE_ID}/subscribe \
+  -H "Authorization: Bearer {PAGE_ACCESS_TOKEN}"
+```
+
+Từ đây, mỗi khi có bình luận mới trên page, Facebook sẽ gửi `POST /webhook` về server của bạn.
 
 ---
 
-## Lấy Page Access Token
+## 8. Đăng ký nhận sự kiện từ Facebook
 
-1. Vào [Meta for Developers](https://developers.facebook.com/)
-2. Chọn App > **Tools > Graph API Explorer**
-3. Trong phần **User or Page**, chọn đúng Page của bạn
-4. Thêm các permissions cần thiết:
-   - `pages_read_engagement`
-   - `pages_manage_posts`
-   - `read_insights`
-5. Nhấn **Generate Access Token** và sao chép token vào file `.env`
+Đây là bước **bắt buộc** — nếu bỏ qua, Facebook sẽ không gửi events dù webhook đã được verify.
 
----
+### Đăng ký (Subscribe)
 
-## Ví dụ response
+```
+POST /api/page/:pageId/subscribe
+Authorization: Bearer <Page_Access_Token>
+```
 
-Tất cả response đều có cấu trúc:
+```bash
+curl -X POST http://localhost:3001/api/page/123456789/subscribe \
+  -H "Authorization: Bearer EAAxxxxxx"
+```
 
+**Response thành công:**
 ```json
 {
   "success": true,
-  "data": { ... }
+  "message": "Đã đăng ký nhận webhook events cho page 123456789",
+  "data": { "success": true }
 }
 ```
 
-Khi có lỗi:
+### Kiểm tra trạng thái
 
+```
+GET /api/page/:pageId/subscription-status
+Authorization: Bearer <Page_Access_Token>
+```
+
+### Hủy đăng ký
+
+```
+DELETE /api/page/:pageId/subscribe
+Authorization: Bearer <Page_Access_Token>
+```
+
+---
+
+## 9. Danh sách API
+
+### Webhook Endpoints
+
+| Method | Endpoint   | Mô tả |
+|--------|------------|-------|
+| GET    | `/webhook` | Facebook gọi để xác thực lần đầu (Challenge-Response) |
+| POST   | `/webhook` | Facebook POST events vào đây (comment, message, …) |
+
+### Page Management
+
+| Method | Endpoint | Mô tả |
+|--------|----------|-------|
+| GET    | `/api/page/:pageId` | Thông tin cơ bản của Page |
+| GET    | `/api/page/:pageId/posts` | Danh sách bài đăng |
+| POST   | `/api/page/:pageId/posts` | Đăng bài mới |
+| DELETE | `/api/page/post/:postId` | Xóa bài đăng |
+| GET    | `/api/page/post/:postId/comments` | Lấy bình luận |
+| GET    | `/api/page/post/:postId/likes` | Lấy lượt thích |
+| GET    | `/api/page/:pageId/insights` | Thống kê page |
+
+### Webhook Subscription
+
+| Method | Endpoint | Mô tả |
+|--------|----------|-------|
+| POST   | `/api/page/:pageId/subscribe` | Đăng ký nhận webhook events |
+| DELETE | `/api/page/:pageId/subscribe` | Hủy đăng ký |
+| GET    | `/api/page/:pageId/subscription-status` | Kiểm tra trạng thái đăng ký |
+
+> Mọi request đến `/api/page/**` cần header: `Authorization: Bearer <Page_Access_Token>`
+
+---
+
+## 10. Schema chuẩn hóa sự kiện
+
+Dù Facebook gửi **Comment** hay **Message**, sau khi normalize đều ra cùng một schema:
+
+```json
+{
+  "eventId":     "uuid-v4-tự-sinh",
+  "type":        "comment | message | unknown",
+  "pageId":      "ID của Facebook Page",
+  "senderId":    "ID người gửi",
+  "recipientId": "ID người nhận (page hoặc post)",
+  "content":     "Nội dung bình luận / tin nhắn",
+  "attachments": [],
+  "postId":      "ID bài viết (chỉ có ở comment, null nếu là message)",
+  "commentId":   "ID bình luận (chỉ có ở comment, null nếu là message)",
+  "timestamp":   "2024-01-15T10:30:00.000Z",
+  "receivedAt":  "2024-01-15T10:30:00.123Z",
+  "raw":         { "...payload gốc từ Facebook..." }
+}
+```
+
+**Ví dụ thực tế — Comment event:**
+```json
+{
+  "eventId":     "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "type":        "comment",
+  "pageId":      "123456789",
+  "senderId":    "987654321",
+  "recipientId": "123456789",
+  "content":     "Bài viết hay quá!",
+  "attachments": [],
+  "postId":      "123456789_111222333",
+  "commentId":   "444555666777",
+  "timestamp":   "2024-01-15T10:30:00.000Z",
+  "receivedAt":  "2024-01-15T10:30:00.123Z",
+  "raw":         { "...raw Facebook payload..." }
+}
+```
+
+---
+
+## 11. Kiểm tra luồng end-to-end
+
+### Cách 1 — Gửi test event giả (không cần Facebook thật)
+
+```bash
+curl -X POST http://localhost:3001/webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "object": "page",
+    "entry": [
+      {
+        "id": "123456789",
+        "time": 1704067200,
+        "changes": [
+          {
+            "field": "feed",
+            "value": {
+              "item": "comment",
+              "from": { "id": "987654321", "name": "Nguyễn Văn A" },
+              "message": "Bài viết rất hay!",
+              "post_id": "123456789_111222333",
+              "comment_id": "444555666777",
+              "created_time": 1704067200
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+> **Lưu ý:** Nếu `FACEBOOK_APP_SECRET` chưa điền, server sẽ bỏ qua xác thực chữ ký và vẫn xử lý request (mode dev).
+
+**Kết quả mong đợi:**
+- Server trả về `{"status":"EVENT_RECEIVED"}`
+- Console server hiển thị: `[Kafka] Đã publish event [comment] eventId=... → topic="raw_events"`
+- Kafka UI tại http://localhost:8080 hiển thị message mới trong topic `raw_events`
+
+### Cách 2 — Xem message trong Kafka UI
+
+1. Mở http://localhost:8080
+2. Chọn cluster `local-cluster`
+3. Vào **Topics** → `raw_events`
+4. Tab **Messages** → xem các sự kiện đã được publish
+
+---
+
+## 12. Lấy Page Access Token
+
+1. Vào [Meta for Developers](https://developers.facebook.com/)
+2. Chọn App → **Tools → Graph API Explorer**
+3. Trong phần **User or Page**, chọn đúng Page của bạn
+4. Thêm các permissions cần thiết:
+   - `pages_read_engagement` — đọc bình luận, like
+   - `pages_manage_posts` — đăng/xóa bài
+   - `read_insights` — xem thống kê
+   - `pages_manage_metadata` — đăng ký webhook subscription
+5. Nhấn **Generate Access Token** và sao chép vào file `.env`
+
+---
+
+## Cấu trúc Response
+
+**Thành công:**
+```json
+{
+  "success": true,
+  "data": { "..." }
+}
+```
+
+**Lỗi:**
 ```json
 {
   "success": false,
