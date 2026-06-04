@@ -11,8 +11,9 @@
 
 const axios = require("axios");
 const { BASE_URL, PAGE_ACCESS_TOKEN } = require("../config/graph");
+const { commentBreaker } = require("./circuitBreaker");
 
-const DEFAULT_TIMEOUT_MS = 10000; // 10 giây
+const DEFAULT_TIMEOUT_MS = 10000;
 
 /**
  * Ẩn một bình luận trên Facebook Page.
@@ -26,16 +27,11 @@ async function hideComment(commentId, token) {
 
   console.log(`[FacebookAction] Đang ẩn comment ${commentId}...`);
 
-  const response = await axios.post(
-    `${BASE_URL}/${commentId}`,
-    null,
-    {
-      params: {
-        is_hidden: true,
-        access_token: accessToken,
-      },
+  const response = await commentBreaker.call(() =>
+    axios.post(`${BASE_URL}/${commentId}`, null, {
+      params: { is_hidden: true, access_token: accessToken },
       timeout: DEFAULT_TIMEOUT_MS,
-    }
+    })
   );
 
   console.log(`[FacebookAction] ✅ Đã ẩn comment ${commentId}.`);
@@ -114,20 +110,19 @@ async function replyToComment(commentId, message, token) {
 
   console.log(`[FacebookAction] Đang reply comment ${commentId}...`);
 
-  const response = await axios.post(
-    `${BASE_URL}/${commentId}/comments`,
-    null,
-    {
-      params: {
-        message,
-        access_token: accessToken,
-      },
+  const response = await commentBreaker.call(() =>
+    axios.post(`${BASE_URL}/${commentId}/comments`, null, {
+      params: { message, access_token: accessToken },
       timeout: DEFAULT_TIMEOUT_MS,
-    }
+    })
   );
 
   console.log(`[FacebookAction] ✅ Đã reply comment ${commentId}.`);
   return response.data;
 }
 
-module.exports = { hideComment, unhideComment, blockUser, replyToComment };
+function getCircuitBreakerState() {
+  return commentBreaker.getState();
+}
+
+module.exports = { hideComment, unhideComment, blockUser, replyToComment, getCircuitBreakerState };

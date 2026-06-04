@@ -1,0 +1,26 @@
+groups:
+  - name: kafka_alerts
+    rules:
+      - alert: DeadLetterQueueReceived
+        expr: increase(kafka_topic_partition_current_offset{topic="dead_letter"}) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Message mới trong Dead Letter Queue"
+          description: "Có message mới được đưa vào dead_letter — cần kiểm tra ngay."
+
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_group_lag > 500
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Consumer lag quá cao"
+          description: "Consumer group lag > 500 messages trong 2 phút."
+
+      - alert: WebhookReceiverSilent
+        expr: increase(kafka_topic_partition_current_offset{topic="raw_events"}) == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Webhook không nhận event"
+          description: "Không có event mới trong topic raw_events suốt 10 phút."
